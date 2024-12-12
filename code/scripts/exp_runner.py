@@ -53,4 +53,5 @@ if __name__ == '__main__':
                             only_json=opt.only_json,
                             )
 
-        runner.run()
+        runner.run_showcase()
+        # runner.run()
