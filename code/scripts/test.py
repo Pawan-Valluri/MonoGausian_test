@@ -2,6 +2,8 @@ import os
 from pyhocon import ConfigFactory
 import sys
 import torch
+import tyro
+import dearpygui.dearpygui as dpg
 
 import utils.general as utils
 import utils.plots as plt
@@ -9,6 +11,7 @@ import utils.plots as plt
 from functools import partial
 
 from model.monogaussian_avatar_model import MonogaussianAvatar
+from utils.viewer import LocalViewer, Config
 
 print = partial(print, flush=True)
 class TestRunner():
@@ -241,6 +244,141 @@ class TestRunner():
             from utils.metrics import run as cal_metrics
             cal_metrics(output_dir=plot_dir[0], gt_dir=self.plot_dataset.gt_dir, pred_file_name='rgb_erode_dilate')
             cal_metrics(output_dir=plot_dir[0], gt_dir=self.plot_dataset.gt_dir, pred_file_name='rgb_erode_dilate', no_cloth=True)
+
+    def run_showcase(self):
+        cfg = tyro.cli(Config)
+        viewer = LocalViewer(cfg=cfg)
+        viewer.define_gui()
+
+        self.model.eval()
+        self.model.training = False
+        if self.optimize_tracking:
+            print(
+                "Optimizing tracking, this is a slow process which is only used for calculating metrics. \n"
+                "for qualitative animation, set optimize_expression and optimize_camera to False in the conf file."
+            )
+            for data_index, (indices, model_input, ground_truth) in enumerate(
+                self.plot_dataloader
+            ):
+                print(list(model_input["idx"].reshape(-1).cpu().numpy()))
+                for k, v in model_input.items():
+                    try:
+                        model_input[k] = v.cuda()
+                    except:
+                        model_input[k] = v
+                for k, v in ground_truth.items():
+                    try:
+                        ground_truth[k] = v.cuda()
+                    except:
+                        ground_truth[k] = v
+
+                R = model_input["cam_pose"][:, :3, :3]
+                for i in range(20):
+                    if self.optimize_expression:
+                        model_input["expression"] = self.expression(
+                            model_input["idx"]
+                        ).squeeze(1)
+                    if self.optimize_pose:
+                        model_input["flame_pose"] = self.flame_pose(
+                            model_input["idx"]
+                        ).squeeze(1)
+                        model_input["cam_pose"] = torch.cat(
+                            [
+                                R,
+                                self.camera_pose(model_input["idx"])
+                                .squeeze(1)
+                                .unsqueeze(-1),
+                            ],
+                            -1,
+                        )
+
+                    model_outputs = self.model(model_input)
+                    loss_output = self.loss(model_outputs, ground_truth)
+                    loss = loss_output["loss"]
+                    self.optimizer_cam.zero_grad()
+                    loss.backward()
+                    self.optimizer_cam.step()
+            self.save_test_tracking(epoch=self.start_epoch)
+
+        eval_all = True
+        eval_iterator = iter(self.plot_dataloader)
+        is_first_batch = True
+        for img_index in range(len(self.plot_dataloader)):
+            while dpg.is_dearpygui_running():
+                indices, model_input, ground_truth = next(eval_iterator)
+                batch_size = model_input["expression"].shape[0]
+                for k, v in model_input.items():
+                    try:
+                        model_input[k] = v.cuda()
+                        # model_input[k] = v.cpu()
+
+                    except:
+                        model_input[k] = v
+
+                for k, v in ground_truth.items():
+                    try:
+                        ground_truth[k] = v.cuda()
+                        # ground_truth[k] = v.cpu()
+                    except:
+                        ground_truth[k] = v
+
+                if self.optimize_inputs:
+                    if self.optimize_expression:
+                        model_input["expression"] = self.expression(
+                            model_input["idx"]
+                        ).squeeze(1)
+                    if self.optimize_pose:
+                        model_input["flame_pose"] = self.flame_pose(
+                            model_input["idx"]
+                        ).squeeze(1)
+                        model_input["cam_pose"][:, :3, 3] = self.camera_pose(
+                            model_input["idx"]
+                        ).squeeze(1)
+                model_outputs = self.model.forward_showcase(model_input)
+
+                while viewer.need_update or viewer.playing:
+                    image, visible_points = self.model._render(
+                        model_outputs["world_view_transform"],
+                        model_outputs["full_proj_transform"],
+                        model_outputs["camera_center"],
+                        model_outputs["tanfovx"],
+                        model_outputs["tanfovy"],
+                        model_outputs["bg_color"],
+                        model_outputs["image_h"],
+                        model_outputs["image_w"],
+                        model_outputs["xyz"],
+                        model_outputs["color"],
+                        model_outputs["scales"],
+                        model_outputs["rotations"],
+                        model_outputs["opacity"],
+                    )
+                    image = image.unsqueeze(0).permute(0, 2, 3, 1)
+                    image = image.reshape(1, self.img_res[0], self.img_res[1], 3)
+                    image = image.squeeze(0).cpu().numpy()
+                    
+                    dpg.set_value("_texture", image)
+                    
+                    viewer.refresh_stat()
+                    viewer.need_update = False
+                    
+                    if viewer.playing:
+                        record_timestep = dpg.get_value("_slider_record_timestep")
+                        if record_timestep >= viewer.num_record_timeline - 1:
+                            if not dpg.get_value("_checkbox_loop_record"):
+                                viewer.playing = False
+                            dpg.set_value("_slider_record_timestep", 0)
+                        else:
+                            dpg.set_value("_slider_record_timestep", record_timestep + 1)
+                            if dpg.get_value("_checkbox_dynamic_record"):
+                                viewer.timestep = min(viewer.timestep + 1, viewer.num_timesteps - 1)
+                                dpg.set_value("_slider_timestep", viewer.timestep)
+                                viewer.gaussians.select_mesh_by_timestep(viewer.timestep)
+
+                            state_dict = viewer.get_state_dict_record()
+                            viewer.apply_state_dict(state_dict)
+
+                    dpg.render_dearpygui_frame()
+
 
 
 
