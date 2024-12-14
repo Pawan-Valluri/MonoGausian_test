@@ -492,8 +492,6 @@ class TestRunner():
                     model_outputs["opacity"],
                 )
 
-<<<<<<< HEAD
-=======
                 print("@@@@@@@@@@@@@@")
                 print(
                     model_outputs["world_view_transform"],
@@ -504,7 +502,6 @@ class TestRunner():
                 )
                 print("@@@@@@@@@@@@@@")
                 
->>>>>>> ecdf3c5 (cv2 version of gui (ft. chatgpt))
                 # image, visible_points = self.model._render(
                 #     viewer.camera.world_view_transform,
                 #     viewer.camera.full_proj_transform,
